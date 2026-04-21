@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
-	"github.com/alireza0/s-ui/database"
-	"github.com/alireza0/s-ui/database/model"
+	"github.com/alireza0/s-ui/database"	"github.com/alireza0/s-ui/database/model"
 	"github.com/alireza0/s-ui/util"
 	"github.com/alireza0/s-ui/util/common"
 
@@ -250,7 +250,15 @@ func (s *InboundService) hasUser(inboundType string) bool {
 	return false
 }
 
-func (s *InboundService) fetchUsers(db *gorm.DB, inboundType string, condition string, inbound map[string]interface{}) ([]json.RawMessage, error) {
+// validInboundTypes is a whitelist of allowed inbound type names for safe use in SQL.
+var validInboundTypes = map[string]bool{
+	"mixed": true, "socks": true, "http": true, "shadowsocks": true,
+	"shadowsocks16": true, "vmess": true, "trojan": true, "naive": true,
+	"hysteria": true, "shadowtls": true, "tuic": true, "hysteria2": true,
+	"vless": true, "anytls": true,
+}
+
+func (s *InboundService) fetchUsersByInbound(db *gorm.DB, inboundType string, inboundId uint, inbound map[string]interface{}) ([]json.RawMessage, error) {
 	if inboundType == "shadowtls" {
 		version, _ := inbound["version"].(float64)
 		if int(version) < 3 {
@@ -264,12 +272,54 @@ func (s *InboundService) fetchUsers(db *gorm.DB, inboundType string, condition s
 		}
 	}
 
-	var users []string
+	if !validInboundTypes[inboundType] {
+		return nil, fmt.Errorf("invalid inbound type: %s", inboundType)
+	}
 
+	var users []string
+	// inboundType is validated against a whitelist, safe to use in json path.
+	// inboundId is uint, safe from injection.
 	err := db.Raw(
 		fmt.Sprintf(`SELECT json_extract(clients.config, "$.%s")
-		FROM clients WHERE enable = true AND %s`,
-			inboundType, condition)).Scan(&users).Error
+		FROM clients WHERE enable = true AND ? IN (SELECT json_each.value FROM json_each(clients.inbounds))`,
+			inboundType), inboundId).Scan(&users).Error
+	if err != nil {
+		return nil, err
+	}
+	var usersJson []json.RawMessage
+	for _, user := range users {
+		if inboundType == "vless" && inbound["tls"] == nil {
+			user = strings.Replace(user, "xtls-rprx-vision", "", -1)
+		}
+		usersJson = append(usersJson, json.RawMessage(user))
+	}
+	return usersJson, nil
+}
+
+func (s *InboundService) fetchUsersByClientIds(db *gorm.DB, inboundType string, clientIds []uint, inbound map[string]interface{}) ([]json.RawMessage, error) {
+	if inboundType == "shadowtls" {
+		version, _ := inbound["version"].(float64)
+		if int(version) < 3 {
+			return nil, nil
+		}
+	}
+	if inboundType == "shadowsocks" {
+		method, _ := inbound["method"].(string)
+		if method == "2022-blake3-aes-128-gcm" {
+			inboundType = "shadowsocks16"
+		}
+	}
+
+	if !validInboundTypes[inboundType] {
+		return nil, fmt.Errorf("invalid inbound type: %s", inboundType)
+	}
+
+	var users []string
+	// inboundType is validated against a whitelist, safe to use in json path.
+	err := db.Raw(
+		fmt.Sprintf(`SELECT json_extract(clients.config, "$.%s")
+		FROM clients WHERE enable = true AND id IN ?`,
+			inboundType), clientIds).Scan(&users).Error
 	if err != nil {
 		return nil, err
 	}
@@ -294,8 +344,7 @@ func (s *InboundService) addUsers(db *gorm.DB, inboundJson []byte, inboundId uin
 		return nil, err
 	}
 
-	condition := fmt.Sprintf("%d IN (SELECT json_each.value FROM json_each(clients.inbounds))", inboundId)
-	inbound["users"], err = s.fetchUsers(db, inboundType, condition, inbound)
+	inbound["users"], err = s.fetchUsersByInbound(db, inboundType, inboundId, inbound)
 	if err != nil {
 		return nil, err
 	}
@@ -304,12 +353,29 @@ func (s *InboundService) addUsers(db *gorm.DB, inboundJson []byte, inboundId uin
 }
 
 func (s *InboundService) initUsers(db *gorm.DB, inboundJson []byte, clientIds string, inboundType string) ([]byte, error) {
-	ClientIds := strings.Split(clientIds, ",")
-	if len(ClientIds) == 0 {
+	rawIds := strings.Split(clientIds, ",")
+	if len(rawIds) == 0 {
 		return inboundJson, nil
 	}
 
 	if !s.hasUser(inboundType) {
+		return inboundJson, nil
+	}
+
+	// Parse and validate client IDs to prevent injection
+	var parsedIds []uint
+	for _, rawId := range rawIds {
+		rawId = strings.TrimSpace(rawId)
+		if rawId == "" {
+			continue
+		}
+		id, err := strconv.ParseUint(rawId, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid client id: %s", rawId)
+		}
+		parsedIds = append(parsedIds, uint(id))
+	}
+	if len(parsedIds) == 0 {
 		return inboundJson, nil
 	}
 
@@ -319,8 +385,7 @@ func (s *InboundService) initUsers(db *gorm.DB, inboundJson []byte, clientIds st
 		return nil, err
 	}
 
-	condition := fmt.Sprintf("id IN (%s)", strings.Join(ClientIds, ","))
-	inbound["users"], err = s.fetchUsers(db, inboundType, condition, inbound)
+	inbound["users"], err = s.fetchUsersByClientIds(db, inboundType, parsedIds, inbound)
 	if err != nil {
 		return nil, err
 	}
