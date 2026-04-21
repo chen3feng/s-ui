@@ -2,6 +2,7 @@ package database
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/alireza0/s-ui/config"
 	"github.com/alireza0/s-ui/database/model"
+	"github.com/alireza0/s-ui/util/common"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
@@ -34,7 +36,9 @@ func initUser() error {
 		return err
 	}
 	if count == 0 {
-		hashedPassword, err := hashPassword("admin")
+		// Generate a random password for the initial admin user
+		randomPassword := common.Random(16)
+		hashedPassword, err := hashPassword(randomPassword)
 		if err != nil {
 			return err
 		}
@@ -42,7 +46,16 @@ func initUser() error {
 			Username: "admin",
 			Password: hashedPassword,
 		}
-		return db.Create(user).Error
+		err = db.Create(user).Error
+		if err != nil {
+			return err
+		}
+		log.Println("============================================")
+		log.Println(" Initial admin credentials generated")
+		log.Println(" Username: admin")
+		log.Println(" Password:", randomPassword)
+		log.Println(" Please change the password after login!")
+		log.Println("============================================")
 	}
 	return nil
 }
