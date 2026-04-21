@@ -1,3 +1,4 @@
+# Release workflow for S-UI
 name: Release S-UI
 
 on:

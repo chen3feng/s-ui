@@ -1,3 +1,4 @@
+# Windows build workflow for S-UI
 name: Build S-UI for Windows
 
 on:
