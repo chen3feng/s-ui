@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/alireza0/s-ui/database"
@@ -242,19 +243,32 @@ func (s *InboundService) GetAllConfig(db *gorm.DB) ([]json.RawMessage, error) {
 	return inboundsJson, nil
 }
 
-func (s *InboundService) hasUser(inboundType string) bool {
-	switch inboundType {
-	case "mixed", "socks", "http", "shadowsocks", "vmess", "trojan", "naive", "hysteria", "shadowtls", "tuic", "hysteria2", "vless", "anytls":
-		return true
-	}
-	return false
+// inboundTypesWithUser defines inbound types that support user management.
+// This is the single source of truth — both hasUser() and SQL whitelist validation use it.
+var inboundTypesWithUser = map[string]bool{
+	"mixed": true, "socks": true, "http": true, "shadowsocks": true,
+	"vmess": true, "trojan": true, "naive": true, "hysteria": true,
+	"shadowtls": true, "tuic": true, "hysteria2": true, "vless": true,
+	"anytls": true,
 }
 
-func (s *InboundService) fetchUsers(db *gorm.DB, inboundType string, condition string, inbound map[string]interface{}) ([]json.RawMessage, error) {
+func (s *InboundService) hasUser(inboundType string) bool {
+	return inboundTypesWithUser[inboundType]
+}
+
+// validSQLInboundTypes returns whether an inbound type name is safe for use in SQL json path.
+// It includes all user-capable types plus internal variants like "shadowsocks16".
+func validSQLInboundType(inboundType string) bool {
+	return inboundTypesWithUser[inboundType] || inboundType == "shadowsocks16"
+}
+
+// resolveInboundType adjusts the inbound type based on protocol-specific rules.
+// Returns the resolved type, or empty string if this type/version should be skipped.
+func resolveInboundType(inboundType string, inbound map[string]interface{}) (string, error) {
 	if inboundType == "shadowtls" {
 		version, _ := inbound["version"].(float64)
 		if int(version) < 3 {
-			return nil, nil
+			return "", nil // skip
 		}
 	}
 	if inboundType == "shadowsocks" {
@@ -263,16 +277,14 @@ func (s *InboundService) fetchUsers(db *gorm.DB, inboundType string, condition s
 			inboundType = "shadowsocks16"
 		}
 	}
-
-	var users []string
-
-	err := db.Raw(
-		fmt.Sprintf(`SELECT json_extract(clients.config, "$.%s")
-		FROM clients WHERE enable = true AND %s`,
-			inboundType, condition)).Scan(&users).Error
-	if err != nil {
-		return nil, err
+	if !validSQLInboundType(inboundType) {
+		return "", fmt.Errorf("invalid inbound type: %s", inboundType)
 	}
+	return inboundType, nil
+}
+
+// toUsersJson converts raw user config strings to JSON, applying vless-specific fixups.
+func toUsersJson(users []string, inboundType string, inbound map[string]interface{}) []json.RawMessage {
 	var usersJson []json.RawMessage
 	for _, user := range users {
 		if inboundType == "vless" && inbound["tls"] == nil {
@@ -280,7 +292,50 @@ func (s *InboundService) fetchUsers(db *gorm.DB, inboundType string, condition s
 		}
 		usersJson = append(usersJson, json.RawMessage(user))
 	}
-	return usersJson, nil
+	return usersJson
+}
+
+func (s *InboundService) fetchUsersByInbound(db *gorm.DB, inboundType string, inboundId uint, inbound map[string]interface{}) ([]json.RawMessage, error) {
+	resolved, err := resolveInboundType(inboundType, inbound)
+	if err != nil {
+		return nil, err
+	}
+	if resolved == "" {
+		return nil, nil
+	}
+
+	var users []string
+	// resolved is validated against a whitelist, safe to use in json path.
+	// inboundId is uint, safe from injection.
+	err = db.Raw(
+		fmt.Sprintf(`SELECT json_extract(clients.config, "$.%s")
+		FROM clients WHERE enable = true AND ? IN (SELECT json_each.value FROM json_each(clients.inbounds))`,
+			resolved), inboundId).Scan(&users).Error
+	if err != nil {
+		return nil, err
+	}
+	return toUsersJson(users, resolved, inbound), nil
+}
+
+func (s *InboundService) fetchUsersByClientIds(db *gorm.DB, inboundType string, clientIds []uint, inbound map[string]interface{}) ([]json.RawMessage, error) {
+	resolved, err := resolveInboundType(inboundType, inbound)
+	if err != nil {
+		return nil, err
+	}
+	if resolved == "" {
+		return nil, nil
+	}
+
+	var users []string
+	// resolved is validated against a whitelist, safe to use in json path.
+	err = db.Raw(
+		fmt.Sprintf(`SELECT json_extract(clients.config, "$.%s")
+		FROM clients WHERE enable = true AND id IN ?`,
+			resolved), clientIds).Scan(&users).Error
+	if err != nil {
+		return nil, err
+	}
+	return toUsersJson(users, resolved, inbound), nil
 }
 
 func (s *InboundService) addUsers(db *gorm.DB, inboundJson []byte, inboundId uint, inboundType string) ([]byte, error) {
@@ -294,8 +349,7 @@ func (s *InboundService) addUsers(db *gorm.DB, inboundJson []byte, inboundId uin
 		return nil, err
 	}
 
-	condition := fmt.Sprintf("%d IN (SELECT json_each.value FROM json_each(clients.inbounds))", inboundId)
-	inbound["users"], err = s.fetchUsers(db, inboundType, condition, inbound)
+	inbound["users"], err = s.fetchUsersByInbound(db, inboundType, inboundId, inbound)
 	if err != nil {
 		return nil, err
 	}
@@ -303,9 +357,30 @@ func (s *InboundService) addUsers(db *gorm.DB, inboundJson []byte, inboundId uin
 	return json.Marshal(inbound)
 }
 
+// parseUintList parses a comma-separated string of IDs into a []uint slice.
+// It validates each element is a valid unsigned integer to prevent injection.
+func parseUintList(csv string) ([]uint, error) {
+	var result []uint
+	for _, raw := range strings.Split(csv, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		id, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid id: %s", raw)
+		}
+		result = append(result, uint(id))
+	}
+	return result, nil
+}
+
 func (s *InboundService) initUsers(db *gorm.DB, inboundJson []byte, clientIds string, inboundType string) ([]byte, error) {
-	ClientIds := strings.Split(clientIds, ",")
-	if len(ClientIds) == 0 {
+	parsedIds, err := parseUintList(clientIds)
+	if err != nil {
+		return nil, err
+	}
+	if len(parsedIds) == 0 {
 		return inboundJson, nil
 	}
 
@@ -314,13 +389,12 @@ func (s *InboundService) initUsers(db *gorm.DB, inboundJson []byte, clientIds st
 	}
 
 	var inbound map[string]interface{}
-	err := json.Unmarshal(inboundJson, &inbound)
+	err = json.Unmarshal(inboundJson, &inbound)
 	if err != nil {
 		return nil, err
 	}
 
-	condition := fmt.Sprintf("id IN (%s)", strings.Join(ClientIds, ","))
-	inbound["users"], err = s.fetchUsers(db, inboundType, condition, inbound)
+	inbound["users"], err = s.fetchUsersByClientIds(db, inboundType, parsedIds, inbound)
 	if err != nil {
 		return nil, err
 	}
