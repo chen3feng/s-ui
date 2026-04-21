@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/gob"
+	"net/http"
 
 	"github.com/alireza0/s-ui/database/model"
 
@@ -13,31 +14,46 @@ const (
 	loginUser = "LOGIN_USER"
 )
 
+// secureCookie indicates whether the cookie should have the Secure flag set.
+// It is set to true when TLS is configured.
+var secureCookie bool
+
 func init() {
 	gob.Register(model.User{})
 }
 
-func SetLoginUser(c *gin.Context, userName string, maxAge int) error {
-	options := sessions.Options{
-		Path:   "/",
-		Secure: false,
+// SetSecureCookie configures whether session cookies should have the Secure flag.
+func SetSecureCookie(secure bool) {
+	secureCookie = secure
+}
+
+// newSessionOptions creates a sessions.Options with security attributes applied.
+func newSessionOptions(maxAge int) sessions.Options {
+	return sessions.Options{
+		Path:     "/",
+		MaxAge:   maxAge,
+		Secure:   secureCookie,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
 	}
+}
+
+func SetLoginUser(c *gin.Context, userName string, maxAge int) error {
+	age := 0
 	if maxAge > 0 {
-		options.MaxAge = maxAge * 60
+		age = maxAge * 60
 	}
 
 	s := sessions.Default(c)
 	s.Set(loginUser, userName)
-	s.Options(options)
+	s.Options(newSessionOptions(age))
 
 	return s.Save()
 }
 
 func SetMaxAge(c *gin.Context) error {
 	s := sessions.Default(c)
-	s.Options(sessions.Options{
-		Path: "/",
-	})
+	s.Options(newSessionOptions(0))
 	return s.Save()
 }
 
@@ -61,9 +77,6 @@ func IsLogin(c *gin.Context) bool {
 func ClearSession(c *gin.Context) {
 	s := sessions.Default(c)
 	s.Clear()
-	s.Options(sessions.Options{
-		Path:   "/",
-		MaxAge: -1,
-	})
+	s.Options(newSessionOptions(-1))
 	s.Save()
 }
