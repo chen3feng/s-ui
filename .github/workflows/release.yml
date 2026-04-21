@@ -18,6 +18,17 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 's-ui.service'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release.yml'
+      - 'frontend/**'
+      - '**.sh'
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 's-ui.service'
 
 env:
   NODE_VERSION: "25"
