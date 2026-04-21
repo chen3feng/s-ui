@@ -242,20 +242,23 @@ func (s *InboundService) GetAllConfig(db *gorm.DB) ([]json.RawMessage, error) {
 	return inboundsJson, nil
 }
 
-func (s *InboundService) hasUser(inboundType string) bool {
-	switch inboundType {
-	case "mixed", "socks", "http", "shadowsocks", "vmess", "trojan", "naive", "hysteria", "shadowtls", "tuic", "hysteria2", "vless", "anytls":
-		return true
-	}
-	return false
+// inboundTypesWithUser defines inbound types that support user management.
+// This is the single source of truth — both hasUser() and SQL whitelist validation use it.
+var inboundTypesWithUser = map[string]bool{
+	"mixed": true, "socks": true, "http": true, "shadowsocks": true,
+	"vmess": true, "trojan": true, "naive": true, "hysteria": true,
+	"shadowtls": true, "tuic": true, "hysteria2": true, "vless": true,
+	"anytls": true,
 }
 
-// validInboundTypes is a whitelist of allowed inbound type names for safe use in SQL.
-var validInboundTypes = map[string]bool{
-	"mixed": true, "socks": true, "http": true, "shadowsocks": true,
-	"shadowsocks16": true, "vmess": true, "trojan": true, "naive": true,
-	"hysteria": true, "shadowtls": true, "tuic": true, "hysteria2": true,
-	"vless": true, "anytls": true,
+func (s *InboundService) hasUser(inboundType string) bool {
+	return inboundTypesWithUser[inboundType]
+}
+
+// validSQLInboundTypes returns whether an inbound type name is safe for use in SQL json path.
+// It includes all user-capable types plus internal variants like "shadowsocks16".
+func validSQLInboundType(inboundType string) bool {
+	return inboundTypesWithUser[inboundType] || inboundType == "shadowsocks16"
 }
 
 func (s *InboundService) fetchUsersByInbound(db *gorm.DB, inboundType string, inboundId uint, inbound map[string]interface{}) ([]json.RawMessage, error) {
@@ -272,7 +275,7 @@ func (s *InboundService) fetchUsersByInbound(db *gorm.DB, inboundType string, in
 		}
 	}
 
-	if !validInboundTypes[inboundType] {
+	if !validSQLInboundType(inboundType) {
 		return nil, fmt.Errorf("invalid inbound type: %s", inboundType)
 	}
 
@@ -310,7 +313,7 @@ func (s *InboundService) fetchUsersByClientIds(db *gorm.DB, inboundType string, 
 		}
 	}
 
-	if !validInboundTypes[inboundType] {
+	if !validSQLInboundType(inboundType) {
 		return nil, fmt.Errorf("invalid inbound type: %s", inboundType)
 	}
 
@@ -352,9 +355,30 @@ func (s *InboundService) addUsers(db *gorm.DB, inboundJson []byte, inboundId uin
 	return json.Marshal(inbound)
 }
 
+// parseUintList parses a comma-separated string of IDs into a []uint slice.
+// It validates each element is a valid unsigned integer to prevent injection.
+func parseUintList(csv string) ([]uint, error) {
+	var result []uint
+	for _, raw := range strings.Split(csv, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		id, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid id: %s", raw)
+		}
+		result = append(result, uint(id))
+	}
+	return result, nil
+}
+
 func (s *InboundService) initUsers(db *gorm.DB, inboundJson []byte, clientIds string, inboundType string) ([]byte, error) {
-	rawIds := strings.Split(clientIds, ",")
-	if len(rawIds) == 0 {
+	parsedIds, err := parseUintList(clientIds)
+	if err != nil {
+		return nil, err
+	}
+	if len(parsedIds) == 0 {
 		return inboundJson, nil
 	}
 
@@ -362,25 +386,8 @@ func (s *InboundService) initUsers(db *gorm.DB, inboundJson []byte, clientIds st
 		return inboundJson, nil
 	}
 
-	// Parse and validate client IDs to prevent injection
-	var parsedIds []uint
-	for _, rawId := range rawIds {
-		rawId = strings.TrimSpace(rawId)
-		if rawId == "" {
-			continue
-		}
-		id, err := strconv.ParseUint(rawId, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid client id: %s", rawId)
-		}
-		parsedIds = append(parsedIds, uint(id))
-	}
-	if len(parsedIds) == 0 {
-		return inboundJson, nil
-	}
-
 	var inbound map[string]interface{}
-	err := json.Unmarshal(inboundJson, &inbound)
+	err = json.Unmarshal(inboundJson, &inbound)
 	if err != nil {
 		return nil, err
 	}
