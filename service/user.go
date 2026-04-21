@@ -59,6 +59,29 @@ func (s *UserService) MigratePlaintextPasswords() error {
 	return nil
 }
 
+// checkPasswordStrength checks if a password meets recommended strength criteria.
+// Returns a warning message if the password is weak, or empty string if it's strong enough.
+func checkPasswordStrength(password string) string {
+	if len(password) < 8 {
+		return "password is shorter than 8 characters, consider using a stronger password"
+	}
+	var hasUpper, hasLower, hasDigit bool
+	for _, c := range password {
+		switch {
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		}
+	}
+	if !hasUpper || !hasLower || !hasDigit {
+		return "password lacks complexity (recommend using uppercase, lowercase, and digits)"
+	}
+	return ""
+}
+
 func (s *UserService) GetFirstUser() (*model.User, error) {
 	db := database.GetDB()
 
@@ -77,6 +100,11 @@ func (s *UserService) UpdateFirstUser(username string, password string) error {
 		return common.NewError("username can not be empty")
 	} else if password == "" {
 		return common.NewError("password can not be empty")
+	}
+
+	// Warn about weak passwords but don't block
+	if warning := checkPasswordStrength(password); warning != "" {
+		logger.Warning("Weak password for user '", username, "': ", warning)
 	}
 
 	hashedPassword, err := hashPassword(password)
@@ -158,6 +186,11 @@ func (s *UserService) ChangePass(id string, oldPass string, newUser string, newP
 	// Verify old password using bcrypt
 	if !verifyPassword(user.Password, oldPass) {
 		return common.NewError("old password is incorrect")
+	}
+
+	// Warn about weak passwords but don't block
+	if warning := checkPasswordStrength(newPass); warning != "" {
+		logger.Warning("Weak password for user '", newUser, "': ", warning)
 	}
 
 	// Hash new password
