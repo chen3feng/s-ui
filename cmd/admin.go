@@ -54,11 +54,10 @@ func showAdmin() {
 		fmt.Println("get current user info failed,error info:", err)
 	}
 	username := userModel.Username
-	userpasswd := userModel.Password
-	if (username == "") || (userpasswd == "") {
-		fmt.Println("current username or password is empty")
+	if username == "" {
+		fmt.Println("current username is empty")
 	}
 	fmt.Println("First admin credentials:")
 	fmt.Println("\tUsername:\t", username)
-	fmt.Println("\tPassword:\t", userpasswd)
+	fmt.Println("\tPassword:\t (encrypted, cannot be displayed)")
 }

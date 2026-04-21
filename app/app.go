@@ -39,6 +39,12 @@ func (a *APP) Init() error {
 		return err
 	}
 
+	// Migrate plaintext passwords to bcrypt hashes
+	userService := service.UserService{}
+	if err := userService.MigratePlaintextPasswords(); err != nil {
+		return err
+	}
+
 	// Init Setting
 	a.SettingService.GetAllSetting()
 

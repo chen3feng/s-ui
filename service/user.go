@@ -2,15 +2,61 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/alireza0/s-ui/database"
 	"github.com/alireza0/s-ui/database/model"
 	"github.com/alireza0/s-ui/logger"
 	"github.com/alireza0/s-ui/util/common"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type UserService struct {
+}
+
+// hashPassword hashes a plaintext password using bcrypt.
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+// verifyPassword checks if a plaintext password matches a bcrypt hash.
+func verifyPassword(hashedPassword, password string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+	return err == nil
+}
+
+// isBcryptHash checks if a string looks like a bcrypt hash.
+func isBcryptHash(s string) bool {
+	return strings.HasPrefix(s, "$2a$") || strings.HasPrefix(s, "$2b$") || strings.HasPrefix(s, "$2y$")
+}
+
+// MigratePlaintextPasswords checks all users and migrates plaintext passwords to bcrypt hashes.
+func (s *UserService) MigratePlaintextPasswords() error {
+	db := database.GetDB()
+	var users []model.User
+	err := db.Model(model.User{}).Find(&users).Error
+	if err != nil {
+		return err
+	}
+	for _, user := range users {
+		if !isBcryptHash(user.Password) {
+			hashed, err := hashPassword(user.Password)
+			if err != nil {
+				return err
+			}
+			err = db.Model(model.User{}).Where("id = ?", user.Id).Update("password", hashed).Error
+			if err != nil {
+				return err
+			}
+			logger.Info("Migrated password to bcrypt for user: ", user.Username)
+		}
+	}
+	return nil
 }
 
 func (s *UserService) GetFirstUser() (*model.User, error) {
@@ -32,18 +78,24 @@ func (s *UserService) UpdateFirstUser(username string, password string) error {
 	} else if password == "" {
 		return common.NewError("password can not be empty")
 	}
+
+	hashedPassword, err := hashPassword(password)
+	if err != nil {
+		return err
+	}
+
 	db := database.GetDB()
 	user := &model.User{}
-	err := db.Model(model.User{}).First(user).Error
+	err = db.Model(model.User{}).First(user).Error
 	if database.IsNotFound(err) {
 		user.Username = username
-		user.Password = password
+		user.Password = hashedPassword
 		return db.Model(model.User{}).Create(user).Error
 	} else if err != nil {
 		return err
 	}
 	user.Username = username
-	user.Password = password
+	user.Password = hashedPassword
 	return db.Save(user).Error
 }
 
@@ -60,13 +112,18 @@ func (s *UserService) CheckUser(username string, password string, remoteIP strin
 
 	user := &model.User{}
 	err := db.Model(model.User{}).
-		Where("username = ? and password = ?", username, password).
+		Where("username = ?", username).
 		First(user).
 		Error
 	if database.IsNotFound(err) {
 		return nil
 	} else if err != nil {
 		logger.Warning("check user err:", err, " IP: ", remoteIP)
+		return nil
+	}
+
+	// Verify password using bcrypt
+	if !verifyPassword(user.Password, password) {
 		return nil
 	}
 
@@ -93,12 +150,24 @@ func (s *UserService) GetUsers() (*[]model.User, error) {
 func (s *UserService) ChangePass(id string, oldPass string, newUser string, newPass string) error {
 	db := database.GetDB()
 	user := &model.User{}
-	err := db.Model(model.User{}).Where("id = ? AND password = ?", id, oldPass).First(user).Error
+	err := db.Model(model.User{}).Where("id = ?", id).First(user).Error
 	if err != nil || database.IsNotFound(err) {
 		return err
 	}
+
+	// Verify old password using bcrypt
+	if !verifyPassword(user.Password, oldPass) {
+		return common.NewError("old password is incorrect")
+	}
+
+	// Hash new password
+	hashedPassword, err := hashPassword(newPass)
+	if err != nil {
+		return err
+	}
+
 	user.Username = newUser
-	user.Password = newPass
+	user.Password = hashedPassword
 	return db.Save(user).Error
 }
 

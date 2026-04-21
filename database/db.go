@@ -10,12 +10,22 @@ import (
 	"github.com/alireza0/s-ui/config"
 	"github.com/alireza0/s-ui/database/model"
 
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
 var db *gorm.DB
+
+// hashPassword hashes a plaintext password using bcrypt.
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
 
 func initUser() error {
 	var count int64
@@ -24,9 +34,13 @@ func initUser() error {
 		return err
 	}
 	if count == 0 {
+		hashedPassword, err := hashPassword("admin")
+		if err != nil {
+			return err
+		}
 		user := &model.User{
 			Username: "admin",
-			Password: "admin",
+			Password: hashedPassword,
 		}
 		return db.Create(user).Error
 	}
