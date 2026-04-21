@@ -86,7 +86,25 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	engine.Use(gzip.Gzip(gzip.DefaultCompression))
 	assetsBasePath := base_url + "assets/"
 
+	// Determine if TLS is configured to set Secure cookie flag
+	certFile, err := s.settingService.GetCertFile()
+	if err != nil {
+		return nil, err
+	}
+	keyFile, err := s.settingService.GetKeyFile()
+	if err != nil {
+		return nil, err
+	}
+	isSecure := certFile != "" || keyFile != ""
+	api.SetSecureCookie(isSecure)
+
 	store := cookie.NewStore(secret)
+	store.Options(sessions.Options{
+		Path:     "/",
+		Secure:   isSecure,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
 	engine.Use(sessions.Sessions("s-ui", store))
 
 	engine.Use(func(c *gin.Context) {
