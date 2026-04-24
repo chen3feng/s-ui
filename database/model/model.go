@@ -34,6 +34,7 @@ type Client struct {
 	Down     int64           `json:"down" form:"down"`
 	Up       int64           `json:"up" form:"up"`
 	Desc     string          `json:"desc" form:"desc"`
+	SubUUID string          `json:"subUUID" form:"subUUID" gorm:"uniqueIndex"`
 	Group    string          `json:"group" form:"group"`
 
 	// Delay start and periodic reset

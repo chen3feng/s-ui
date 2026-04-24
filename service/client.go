@@ -2,7 +2,9 @@ package service
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -58,6 +60,12 @@ func (s *ClientService) Save(tx *gorm.DB, act string, data json.RawMessage, host
 		if err != nil {
 			return nil, err
 		}
+		if client.SubUUID == "" {
+			client.SubUUID, err = generateUUID()
+			if err != nil {
+				return nil, err
+			}
+		}
 		err = s.updateLinksWithFixedInbounds(tx, []*model.Client{&client}, hostname)
 		if err != nil {
 			return nil, err
@@ -83,6 +91,14 @@ func (s *ClientService) Save(tx *gorm.DB, act string, data json.RawMessage, host
 		err = json.Unmarshal(data, &clients)
 		if err != nil {
 			return nil, err
+		}
+		for _, c := range clients {
+			if c.SubUUID == "" {
+				c.SubUUID, err = generateUUID()
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 		err = json.Unmarshal(clients[0].Inbounds, &inboundIds)
 		if err != nil {
@@ -545,4 +561,19 @@ func (s *ClientService) findInboundsChanges(tx *gorm.DB, client *model.Client, f
 	diffInbounds := common.DiffUintArray(oldInboundIds, newInboundIds)
 
 	return diffInbounds, nil
+}
+
+// generateUUID generates a random UUID v4 string.
+func generateUUID() (string, error) {
+	uuid := make([]byte, 16)
+	_, err := rand.Read(uuid)
+	if err != nil {
+		return "", err
+	}
+	// Set version 4
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	// Set variant bits
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
 }

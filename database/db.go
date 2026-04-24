@@ -1,7 +1,9 @@
 package database
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path"
@@ -133,6 +135,16 @@ func InitDB(dbPath string) error {
 	if err != nil {
 		return err
 	}
+
+	// Migration: fill in SubUUID for existing clients
+	var clients []model.Client
+	err = db.Model(&model.Client{}).Where("sub_uuid IS NULL OR sub_uuid = ?", "").Find(&clients).Error
+	if err == nil && len(clients) > 0 {
+		for i := range clients {
+			clients[i].SubUUID = generateUUID()
+		}
+		db.Save(&clients)
+	}
 	err = initUser()
 	if err != nil {
 		return err
@@ -147,4 +159,19 @@ func GetDB() *gorm.DB {
 
 func IsNotFound(err error) bool {
 	return err == gorm.ErrRecordNotFound
+}
+
+// generateUUID generates a random UUID v4 string.
+func generateUUID() string {
+	uuid := make([]byte, 16)
+	_, err := rand.Read(uuid)
+	if err != nil {
+		return ""
+	}
+	// Set version 4
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	// Set variant bits
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])
 }
