@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/alireza0/s-ui/config"
 	"github.com/alireza0/s-ui/database"
 	"github.com/alireza0/s-ui/service"
-	"github.com/alireza0/s-ui/util/common"
 )
 
 func resetAdmin() {
@@ -16,18 +18,28 @@ func resetAdmin() {
 		return
 	}
 
-	// Generate a random password for the reset
-	randomPassword := common.Random(16)
+	fmt.Print("Enter new password: ")
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	newPassword := strings.TrimSpace(scanner.Text())
+	if err := scanner.Err(); err != nil {
+		fmt.Println("error reading password:", err)
+		return
+	}
+	if newPassword == "" {
+		fmt.Println("Password cannot be empty")
+		return
+	}
+
 	userService := service.UserService{}
-	err = userService.UpdateFirstUser("admin", randomPassword)
+	err = userService.UpdateFirstUser("admin", newPassword)
 	if err != nil {
 		fmt.Println("reset admin credentials failed:", err)
 	} else {
 		fmt.Println("============================================")
-		fmt.Println(" Admin credentials have been reset")
+		fmt.Println(" Admin credentials have been reset!")
 		fmt.Println(" Username: admin")
-		fmt.Println(" Password:", randomPassword)
-		fmt.Println(" Please change the password after login!")
+		fmt.Println(" Password: (updated, not echoed)")
 		fmt.Println("============================================")
 	}
 }

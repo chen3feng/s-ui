@@ -53,7 +53,7 @@ func initUser() error {
 		log.Println("============================================")
 		log.Println(" Initial admin credentials generated")
 		log.Println(" Username: admin")
-		log.Println(" Password:", randomPassword)
+		log.Println(" Password: (encrypted, use 's-ui admin reset' to set a custom password)")
 		log.Println(" Please change the password after login!")
 		log.Println("============================================")
 	}
