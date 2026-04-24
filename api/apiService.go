@@ -27,50 +27,64 @@ var (
 	loginBanDuration = 1 * time.Minute
 )
 
-func checkLoginRateLimit(ip string) error {
-	loginMu.Lock()
-	defer loginMu.Unlock()
-
-	// Clean up expired entries periodically
+func cleanExpiredAttempt() {
 	now := time.Now()
 	for key, attempt := range loginAttempts {
 		if now.Sub(attempt.firstTry) > loginBanDuration {
 			delete(loginAttempts, key)
 		}
 	}
+}
+
+func checkLoginRateLimit(ip string) error {
+	loginMu.Lock()
+	defer loginMu.Unlock()
+
+	cleanExpiredAttempt()
 
 	attempt, exists := loginAttempts[ip]
 	if !exists {
-		loginAttempts[ip] = &loginAttempt{count: 0, firstTry: now}
 		return nil
 	}
 
-	if attempt.count >= maxLoginAttempts {
-		elapsed := now.Sub(attempt.firstTry)
-		if elapsed < loginBanDuration {
-			remaining := loginBanDuration - elapsed
-			return fmt.Errorf("too many login attempts, try again in %d seconds", int(remaining.Seconds()))
-		}
-		// Ban period expired, reset counter
-		attempt.count = 0
-		attempt.firstTry = now
+	if attempt.count < maxLoginAttempts {
+		return nil
 	}
 
+	// count >= maxLoginAttempts, check ban period
+	if time.Since(attempt.firstTry) < loginBanDuration {
+		remaining := loginBanDuration - time.Since(attempt.firstTry)
+		return fmt.Errorf("too many login attempts, try again in %d seconds", int(remaining.Seconds()))
+	}
+
+	// Ban period expired, allow
 	return nil
 }
 
-func recordLoginAttempt(ip string, success bool) {
+func increaseLogAttempt(ip string) {
 	loginMu.Lock()
 	defer loginMu.Unlock()
 
 	attempt, exists := loginAttempts[ip]
-	if !exists || success {
-		// Reset on success or first attempt
-		loginAttempts[ip] = &loginAttempt{count: 0, firstTry: time.Now()}
+	if !exists {
+		loginAttempts[ip] = &loginAttempt{count: 1, firstTry: time.Now()}
+		return
+	}
+
+	// If ban period expired, reset
+	if time.Since(attempt.firstTry) > loginBanDuration {
+		attempt.count = 1
+		attempt.firstTry = time.Now()
 		return
 	}
 
 	attempt.count++
+}
+
+func deleteLogAttempt(ip string) {
+	loginMu.Lock()
+	defer loginMu.Unlock()
+	delete(loginAttempts, ip)
 }
 
 type ApiService struct {
@@ -329,11 +343,11 @@ func (a *ApiService) Login(c *gin.Context) {
 
 	loginUser, err := a.UserService.Login(c.Request.FormValue("user"), c.Request.FormValue("pass"), remoteIP)
 	if err != nil {
-		recordLoginAttempt(remoteIP, false)
+		increaseLogAttempt(remoteIP)
 		jsonMsg(c, "", err)
 		return
 	}
-	recordLoginAttempt(remoteIP, true)
+	deleteLogAttempt(remoteIP)
 
 	sessionMaxAge, err := a.SettingService.GetSessionMaxAge()
 	if err != nil {
