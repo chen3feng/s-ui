@@ -218,21 +218,13 @@ func ImportDB(file multipart.File) error {
 		return common.NewErrorf("Error checking db: %v", err)
 	}
 
-	// Run PRAGMA integrity_check to verify the database is not corrupted
+	// Run PRAGMA quick_check to verify the database is not corrupted
 	var integrityResult string
-	err = newDb.Raw("PRAGMA integrity_check").Scan(&integrityResult).Error
+	err = newDb.Raw("PRAGMA quick_check").Scan(&integrityResult).Error
 	if err != nil {
-		newDb_db, _ := newDb.DB()
-		if newDb_db != nil {
-			newDb_db.Close()
-		}
 		return common.NewErrorf("Error checking db integrity: %v", err)
 	}
 	if integrityResult != "ok" {
-		newDb_db, _ := newDb.DB()
-		if newDb_db != nil {
-			newDb_db.Close()
-		}
 		return common.NewErrorf("Database integrity check failed: %s", integrityResult)
 	}
 
