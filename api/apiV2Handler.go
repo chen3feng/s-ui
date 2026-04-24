@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"time"
 
@@ -102,7 +103,7 @@ func (a *APIv2Handler) findUsername(c *gin.Context) string {
 			(*a.tokens) = append((*a.tokens)[:index], (*a.tokens)[index+1:]...)
 			continue
 		}
-		if t.Token == token {
+		if subtle.ConstantTimeCompare([]byte(t.Token), []byte(token)) == 1 {
 			return t.Username
 		}
 	}
