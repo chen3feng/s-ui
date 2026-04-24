@@ -26,6 +26,7 @@ type ApiService struct {
 	service.PanelService
 	service.StatsService
 	service.ServerService
+	service.UpgradeService
 }
 
 func (a *ApiService) LoadData(c *gin.Context) {
@@ -402,4 +403,24 @@ func (a *ApiService) GetCheckOutbound(c *gin.Context) {
 	link := c.Query("link")
 	result := a.ConfigService.CheckOutbound(tag, link)
 	jsonObj(c, result, nil)
+}
+
+func (a *ApiService) CheckUpdate(c *gin.Context) {
+	info, err := a.UpgradeService.CheckUpdate()
+	jsonObj(c, info, err)
+}
+
+func (a *ApiService) DoUpgrade(c *gin.Context) {
+	err := a.UpgradeService.Upgrade()
+	if err != nil {
+		jsonMsg(c, "upgrade", err)
+		return
+	}
+	// Restart the panel after successful upgrade
+	panelService := service.PanelService{}
+	restartErr := panelService.RestartPanel(3)
+	if restartErr != nil {
+		logger.Warning("Failed to restart panel after upgrade:", restartErr)
+	}
+	jsonMsg(c, "upgrade", nil)
 }

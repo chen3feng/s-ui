@@ -46,6 +46,8 @@ func (a *APIHandler) postHandler(c *gin.Context) {
 		a.ApiService.RestartApp(c)
 	case "restartSb":
 		a.ApiService.RestartSb(c)
+	case "doUpgrade":
+		a.ApiService.DoUpgrade(c)
 	case "linkConvert":
 		a.ApiService.LinkConvert(c)
 	case "subConvert":
@@ -101,6 +103,8 @@ func (a *APIHandler) getHandler(c *gin.Context) {
 		a.ApiService.GetSingboxConfig(c)
 	case "checkOutbound":
 		a.ApiService.GetCheckOutbound(c)
+	case "checkUpdate":
+		a.ApiService.CheckUpdate(c)
 	default:
 		jsonMsg(c, "failed", common.NewError("unknown action: ", action))
 	}
