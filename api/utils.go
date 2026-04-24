@@ -16,16 +16,56 @@ type Msg struct {
 	Obj     interface{} `json:"obj"`
 }
 
+var privateCIDRs = []*net.IPNet{
+	mustCIDR("10.0.0.0/8"),
+	mustCIDR("172.16.0.0/12"),
+	mustCIDR("192.168.0.0/16"),
+	mustCIDR("127.0.0.0/8"),
+	mustCIDR("::1/128"),
+	mustCIDR("fc00::/7"),
+	mustCIDR("fe80::/10"),
+}
+
+func mustCIDR(s string) *net.IPNet {
+	_, cidr, err := net.ParseCIDR(s)
+	if err != nil {
+		panic("invalid CIDR: " + s)
+	}
+	return cidr
+}
+
+func isPrivateIP(ip net.IP) bool {
+	for _, cidr := range privateCIDRs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func getRemoteIp(c *gin.Context) string {
+	// Walk X-Forwarded-For from right to left, return the first public IP.
+	// This prevents spoofing by untrusted clients who may inject fake
+	// leftmost entries. The rightmost public IP is the actual client
+	// as appended by the outermost trusted proxy (or the client itself).
 	value := c.GetHeader("X-Forwarded-For")
 	if value != "" {
 		ips := strings.Split(value, ",")
-		return ips[0]
-	} else {
-		addr := c.Request.RemoteAddr
-		ip, _, _ := net.SplitHostPort(addr)
-		return ip
+		for i := len(ips) - 1; i >= 0; i-- {
+			ipStr := strings.TrimSpace(ips[i])
+			ip := net.ParseIP(ipStr)
+			if ip != nil && !isPrivateIP(ip) {
+				return ipStr
+			}
+		}
+		// All IPs in chain are private — fall through to RemoteAddr
 	}
+	addr := c.Request.RemoteAddr
+	ip, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return ip
 }
 
 func getHostname(c *gin.Context) string {
