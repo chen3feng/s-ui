@@ -20,7 +20,7 @@ type ipRecord struct {
 	lastTime  time.Time
 }
 
-type loginLimiter struct {
+type loginRateLimiter struct {
 	mu              sync.Mutex
 	records         map[string]*ipRecord
 	maxFail         int
@@ -31,8 +31,8 @@ type loginLimiter struct {
 
 var loginLimiter = newLoginLimiter(5, 1*time.Minute, 200, 1*time.Hour)
 
-func newLoginLimiter(n int, m time.Duration, maxRec int, cleanDur time.Duration) *loginLimiter {
-	return &loginLimiter{
+func newLoginLimiter(n int, m time.Duration, maxRec int, cleanDur time.Duration) *loginRateLimiter {
+	return &loginRateLimiter{
 		records:         make(map[string]*ipRecord),
 		maxFail:         n,
 		waitDuration:    m,
