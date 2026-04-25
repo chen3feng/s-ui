@@ -11,6 +11,7 @@ import (
 	"github.com/alireza0/s-ui/config"
 	"github.com/alireza0/s-ui/database/model"
 	"github.com/alireza0/s-ui/util/common"
+	"github.com/google/uuid"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
@@ -132,6 +133,16 @@ func InitDB(dbPath string) error {
 	)
 	if err != nil {
 		return err
+	}
+
+	// Migration: fill in SubUUID for existing clients
+	var clients []model.Client
+	err = db.Model(&model.Client{}).Where("sub_uuid IS NULL OR sub_uuid = ?", "").Find(&clients).Error
+	if err == nil && len(clients) > 0 {
+		for i := range clients {
+			clients[i].SubUUID = uuid.New().String()
+		}
+		db.Save(&clients)
 	}
 	err = initUser()
 	if err != nil {

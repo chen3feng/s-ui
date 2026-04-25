@@ -11,6 +11,7 @@ import (
 	"github.com/alireza0/s-ui/logger"
 	"github.com/alireza0/s-ui/util"
 	"github.com/alireza0/s-ui/util/common"
+	"github.com/google/uuid"
 
 	"gorm.io/gorm"
 )
@@ -58,6 +59,9 @@ func (s *ClientService) Save(tx *gorm.DB, act string, data json.RawMessage, host
 		if err != nil {
 			return nil, err
 		}
+		if client.SubUUID == "" {
+			client.SubUUID = uuid.New().String()
+		}
 		err = s.updateLinksWithFixedInbounds(tx, []*model.Client{&client}, hostname)
 		if err != nil {
 			return nil, err
@@ -83,6 +87,11 @@ func (s *ClientService) Save(tx *gorm.DB, act string, data json.RawMessage, host
 		err = json.Unmarshal(data, &clients)
 		if err != nil {
 			return nil, err
+		}
+		for _, c := range clients {
+			if c.SubUUID == "" {
+				c.SubUUID = uuid.New().String()
+			}
 		}
 		err = json.Unmarshal(clients[0].Inbounds, &inboundIds)
 		if err != nil {
