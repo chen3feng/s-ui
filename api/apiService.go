@@ -41,50 +41,50 @@ func newLoginLimiter(n int, m time.Duration, maxRec int, cleanDur time.Duration)
 	}
 }
 
-func checkLoginRateLimit(ip string) error {
-	loginLimiter.mu.Lock()
-	defer loginLimiter.mu.Unlock()
+func (l *loginRateLimiter) canTry(ip string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-	r, exists := loginLimiter.records[ip]
-	if !exists || r.failCount < loginLimiter.maxFail {
+	r, exists := l.records[ip]
+	if !exists || r.failCount < l.maxFail {
 		return nil
 	}
 
-	if time.Since(r.lastTime) >= loginLimiter.waitDuration {
+	if time.Since(r.lastTime) >= l.waitDuration {
 		return nil
 	}
 
 	return fmt.Errorf("too many login attempts, please wait before retrying")
 }
 
-func increaseLogAttempt(ip string) {
-	loginLimiter.mu.Lock()
-	defer loginLimiter.mu.Unlock()
+func (l *loginRateLimiter) fail(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
 	now := time.Now()
-	if r, exists := loginLimiter.records[ip]; exists {
+	if r, exists := l.records[ip]; exists {
 		r.failCount++
 		r.lastTime = now
 	} else {
-		loginLimiter.records[ip] = &ipRecord{
+		l.records[ip] = &ipRecord{
 			failCount: 1,
 			lastTime:  now,
 		}
 	}
 
-	if len(loginLimiter.records) > loginLimiter.maxRecords {
-		for k, v := range loginLimiter.records {
-			if time.Since(v.lastTime) > loginLimiter.cleanupDuration {
-				delete(loginLimiter.records, k)
+	if len(l.records) > l.maxRecords {
+		for k, v := range l.records {
+			if time.Since(v.lastTime) > l.cleanupDuration {
+				delete(l.records, k)
 			}
 		}
 	}
 }
 
-func deleteLogAttempt(ip string) {
-	loginLimiter.mu.Lock()
-	defer loginLimiter.mu.Unlock()
-	delete(loginLimiter.records, ip)
+func (l *loginRateLimiter) clear(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.records, ip)
 }
 
 type ApiService struct {
@@ -336,18 +336,18 @@ func (a *ApiService) postActions(c *gin.Context) (string, json.RawMessage, error
 func (a *ApiService) Login(c *gin.Context) {
 	remoteIP := getRemoteIp(c)
 
-	if err := checkLoginRateLimit(remoteIP); err != nil {
+	if err := loginLimiter.canTry(remoteIP); err != nil {
 		jsonMsg(c, "", err)
 		return
 	}
 
 	loginUser, err := a.UserService.Login(c.Request.FormValue("user"), c.Request.FormValue("pass"), remoteIP)
 	if err != nil {
-		increaseLogAttempt(remoteIP)
+		loginLimiter.fail(remoteIP)
 		jsonMsg(c, "", err)
 		return
 	}
-	deleteLogAttempt(remoteIP)
+	loginLimiter.clear(remoteIP)
 
 	sessionMaxAge, err := a.SettingService.GetSessionMaxAge()
 	if err != nil {
