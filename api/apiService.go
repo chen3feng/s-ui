@@ -15,89 +15,76 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// IPRecord tracks the login failure state for a single IP.
-type IPRecord struct {
-	FailCount int       // consecutive failure count
-	LastTime  time.Time // time of last attempt (success, failure, or blocked)
+type ipRecord struct {
+	failCount int
+	lastTime  time.Time
 }
 
-// LoginLimiter provides IP-based rate limiting with a reset-on-retry strategy.
-// When an IP hits the failure threshold, further attempts are blocked until
-// the wait duration expires. Crucially, retrying before the wait is up resets
-// the timer, extending the attacker's waiting period indefinitely.
-type LoginLimiter struct {
-	mu           sync.Mutex
-	records      map[string]*IPRecord
-	maxFail      int           // allowed consecutive failures before rate limiting
-	waitDuration time.Duration // fixed wait interval after hitting the limit
+type loginLimiter struct {
+	mu              sync.Mutex
+	records         map[string]*ipRecord
+	maxFail         int
+	waitDuration    time.Duration
+	maxRecords      int
+	cleanupDuration time.Duration
 }
 
-var loginLimiter = NewLoginLimiter(5, 1*time.Minute)
+var loginLimiter = newLoginLimiter(5, 1*time.Minute, 200, 1*time.Hour)
 
-// NewLoginLimiter creates a LoginLimiter with the given threshold and wait duration.
-func NewLoginLimiter(n int, m time.Duration) *LoginLimiter {
-	return &LoginLimiter{
-		records:      make(map[string]*IPRecord),
-		maxFail:      n,
-		waitDuration: m,
+func newLoginLimiter(n int, m time.Duration, maxRec int, cleanDur time.Duration) *loginLimiter {
+	return &loginLimiter{
+		records:         make(map[string]*ipRecord),
+		maxFail:         n,
+		waitDuration:    m,
+		maxRecords:      maxRec,
+		cleanupDuration: cleanDur,
 	}
 }
 
-// CanTry checks whether the given IP is allowed to attempt a login.
-func (l *LoginLimiter) CanTry(ip string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+func checkLoginRateLimit(ip string) error {
+	loginLimiter.mu.Lock()
+	defer loginLimiter.mu.Unlock()
 
-	r, exists := l.records[ip]
-
-	// 1. No record or hasn't hit the failure threshold → allow.
-	if !exists || r.FailCount < l.maxFail {
-		return true
+	r, exists := loginLimiter.records[ip]
+	if !exists || r.failCount < loginLimiter.maxFail {
+		return nil
 	}
 
-	// 2. Enough time has passed since the last attempt → allow.
-	if time.Since(r.LastTime) >= l.waitDuration {
-		return true
+	if time.Since(r.lastTime) >= loginLimiter.waitDuration {
+		return nil
 	}
 
-	// 3. [Key improvement] Retrying before the wait expires resets the timer.
-	//    This extends the attacker's inter-attempt interval and keeps impatient
-	//    scripts locked out indefinitely.
-	r.LastTime = time.Now()
-	return false
+	return fmt.Errorf("too many login attempts, please wait before retrying")
 }
 
-// RecordResult records a login result for the given IP.
-func (l *LoginLimiter) RecordResult(ip string, success bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+func increaseLogAttempt(ip string) {
+	loginLimiter.mu.Lock()
+	defer loginLimiter.mu.Unlock()
 
-	// 1. On success, remove the record entirely (clean slate).
-	if success {
-		delete(l.records, ip)
-		return
-	}
-
-	// 2. On failure, update or create a record.
 	now := time.Now()
-	if r, exists := l.records[ip]; exists {
-		r.FailCount++
-		r.LastTime = now
+	if r, exists := loginLimiter.records[ip]; exists {
+		r.failCount++
+		r.lastTime = now
 	} else {
-		l.records[ip] = &IPRecord{
-			FailCount: 1,
-			LastTime:  now,
+		loginLimiter.records[ip] = &ipRecord{
+			failCount: 1,
+			lastTime:  now,
 		}
 	}
 
-	// 3. Memory guard: when records exceed 200, evict entries idle for over 1 hour.
-	if len(l.records) > 200 {
-		for k, v := range l.records {
-			if time.Since(v.LastTime) > 1*time.Hour {
-				delete(l.records, k)
+	if len(loginLimiter.records) > loginLimiter.maxRecords {
+		for k, v := range loginLimiter.records {
+			if time.Since(v.lastTime) > loginLimiter.cleanupDuration {
+				delete(loginLimiter.records, k)
 			}
 		}
 	}
+}
+
+func deleteLogAttempt(ip string) {
+	loginLimiter.mu.Lock()
+	defer loginLimiter.mu.Unlock()
+	delete(loginLimiter.records, ip)
 }
 
 type ApiService struct {
@@ -349,18 +336,18 @@ func (a *ApiService) postActions(c *gin.Context) (string, json.RawMessage, error
 func (a *ApiService) Login(c *gin.Context) {
 	remoteIP := getRemoteIp(c)
 
-	if !loginLimiter.CanTry(remoteIP) {
-		jsonMsg(c, "", fmt.Errorf("too many login attempts, please wait before retrying"))
+	if err := checkLoginRateLimit(remoteIP); err != nil {
+		jsonMsg(c, "", err)
 		return
 	}
 
 	loginUser, err := a.UserService.Login(c.Request.FormValue("user"), c.Request.FormValue("pass"), remoteIP)
 	if err != nil {
-		loginLimiter.RecordResult(remoteIP, false)
+		increaseLogAttempt(remoteIP)
 		jsonMsg(c, "", err)
 		return
 	}
-	loginLimiter.RecordResult(remoteIP, true)
+	deleteLogAttempt(remoteIP)
 
 	sessionMaxAge, err := a.SettingService.GetSessionMaxAge()
 	if err != nil {
