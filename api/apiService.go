@@ -15,76 +15,89 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type loginAttempt struct {
-	count    int
-	firstTry time.Time
+// IPRecord tracks the login failure state for a single IP.
+type IPRecord struct {
+	FailCount int       // consecutive failure count
+	LastTime  time.Time // time of last attempt (success, failure, or blocked)
 }
 
-var (
-	loginAttempts    = make(map[string]*loginAttempt)
-	loginMu          sync.Mutex
-	maxLoginAttempts = 5
-	loginBanDuration = 1 * time.Minute
-)
+// LoginLimiter provides IP-based rate limiting with a reset-on-retry strategy.
+// When an IP hits the failure threshold, further attempts are blocked until
+// the wait duration expires. Crucially, retrying before the wait is up resets
+// the timer, extending the attacker's waiting period indefinitely.
+type LoginLimiter struct {
+	mu           sync.Mutex
+	records      map[string]*IPRecord
+	maxFail      int           // allowed consecutive failures before rate limiting
+	waitDuration time.Duration // fixed wait interval after hitting the limit
+}
 
-func cleanExpiredAttempt() {
+var loginLimiter = NewLoginLimiter(5, 1*time.Minute)
+
+// NewLoginLimiter creates a LoginLimiter with the given threshold and wait duration.
+func NewLoginLimiter(n int, m time.Duration) *LoginLimiter {
+	return &LoginLimiter{
+		records:      make(map[string]*IPRecord),
+		maxFail:      n,
+		waitDuration: m,
+	}
+}
+
+// CanTry checks whether the given IP is allowed to attempt a login.
+func (l *LoginLimiter) CanTry(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	r, exists := l.records[ip]
+
+	// 1. No record or hasn't hit the failure threshold → allow.
+	if !exists || r.FailCount < l.maxFail {
+		return true
+	}
+
+	// 2. Enough time has passed since the last attempt → allow.
+	if time.Since(r.LastTime) >= l.waitDuration {
+		return true
+	}
+
+	// 3. [Key improvement] Retrying before the wait expires resets the timer.
+	//    This extends the attacker's inter-attempt interval and keeps impatient
+	//    scripts locked out indefinitely.
+	r.LastTime = time.Now()
+	return false
+}
+
+// RecordResult records a login result for the given IP.
+func (l *LoginLimiter) RecordResult(ip string, success bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// 1. On success, remove the record entirely (clean slate).
+	if success {
+		delete(l.records, ip)
+		return
+	}
+
+	// 2. On failure, update or create a record.
 	now := time.Now()
-	for key, attempt := range loginAttempts {
-		if now.Sub(attempt.firstTry) > loginBanDuration {
-			delete(loginAttempts, key)
+	if r, exists := l.records[ip]; exists {
+		r.FailCount++
+		r.LastTime = now
+	} else {
+		l.records[ip] = &IPRecord{
+			FailCount: 1,
+			LastTime:  now,
 		}
 	}
-}
 
-func checkLoginRateLimit(ip string) error {
-	loginMu.Lock()
-	defer loginMu.Unlock()
-
-	cleanExpiredAttempt()
-
-	attempt, exists := loginAttempts[ip]
-	if !exists {
-		return nil
+	// 3. Memory guard: when records exceed 200, evict entries idle for over 1 hour.
+	if len(l.records) > 200 {
+		for k, v := range l.records {
+			if time.Since(v.LastTime) > 1*time.Hour {
+				delete(l.records, k)
+			}
+		}
 	}
-
-	if attempt.count < maxLoginAttempts {
-		return nil
-	}
-
-	// count >= maxLoginAttempts, check ban period
-	if time.Since(attempt.firstTry) < loginBanDuration {
-		remaining := loginBanDuration - time.Since(attempt.firstTry)
-		return fmt.Errorf("too many login attempts, try again in %d seconds", int(remaining.Seconds()))
-	}
-
-	// Ban period expired, allow
-	return nil
-}
-
-func increaseLogAttempt(ip string) {
-	loginMu.Lock()
-	defer loginMu.Unlock()
-
-	attempt, exists := loginAttempts[ip]
-	if !exists {
-		loginAttempts[ip] = &loginAttempt{count: 1, firstTry: time.Now()}
-		return
-	}
-
-	// If ban period expired, reset
-	if time.Since(attempt.firstTry) > loginBanDuration {
-		attempt.count = 1
-		attempt.firstTry = time.Now()
-		return
-	}
-
-	attempt.count++
-}
-
-func deleteLogAttempt(ip string) {
-	loginMu.Lock()
-	defer loginMu.Unlock()
-	delete(loginAttempts, ip)
 }
 
 type ApiService struct {
@@ -336,18 +349,18 @@ func (a *ApiService) postActions(c *gin.Context) (string, json.RawMessage, error
 func (a *ApiService) Login(c *gin.Context) {
 	remoteIP := getRemoteIp(c)
 
-	if err := checkLoginRateLimit(remoteIP); err != nil {
-		jsonMsg(c, "", err)
+	if !loginLimiter.CanTry(remoteIP) {
+		jsonMsg(c, "", fmt.Errorf("too many login attempts, please wait before retrying"))
 		return
 	}
 
 	loginUser, err := a.UserService.Login(c.Request.FormValue("user"), c.Request.FormValue("pass"), remoteIP)
 	if err != nil {
-		increaseLogAttempt(remoteIP)
+		loginLimiter.RecordResult(remoteIP, false)
 		jsonMsg(c, "", err)
 		return
 	}
-	deleteLogAttempt(remoteIP)
+	loginLimiter.RecordResult(remoteIP, true)
 
 	sessionMaxAge, err := a.SettingService.GetSessionMaxAge()
 	if err != nil {
